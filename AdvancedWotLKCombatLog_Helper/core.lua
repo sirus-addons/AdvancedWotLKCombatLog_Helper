@@ -1,104 +1,213 @@
-local date = date
 local pairs = pairs
-local strfind = string.find
-local strjoin = string.join
-local strlen = string.len
+local select = select
 local time = time
+local strconcat, strjoin, strmatch = strconcat, string.join, string.match
+local tconcat = table.concat
 
+local GetArenaTeam = GetArenaTeam
 local GetGuildInfo = GetGuildInfo
 local GetInventoryItemLink = GetInventoryItemLink
 local GetNumTalents = GetNumTalents
 local GetTalentInfo = GetTalentInfo
-local NotifyInspect = NotifyInspect
-local SendAddonMessage = SendAddonMessage
+local UnitClass = UnitClass
 local UnitGUID = UnitGUID
 local UnitName = UnitName
 local UnitSex = UnitSex
-local GetArenaTeam = GetArenaTeam
-local UnitClass = UnitClass
 local UnitRace = UnitRace
 
 local UNKNOWN = UNKNOWN
 
-local function prep_value(val)
+-- GLOBALS: DEFAULT_CHAT_FRAME, SendAddonMessage
+
+local RPLL_HELPER = CreateFrame("Frame")
+RPLL_HELPER.VERSION = 3
+RPLL_HELPER.MESSAGE_PREFIX = "RPLL_H_"
+RPLL_HELPER.PlayerInfo = {
+	arenaTeams = {},
+	gear = {},
+}
+
+RPLL_HELPER:SetScript("OnEvent", function(self, event, ...)
+	self:OnEvent(event, ...)
+end)
+
+RPLL_HELPER:RegisterEvent("CHAT_MSG_LOOT")
+RPLL_HELPER:RegisterEvent("PET_STABLE_CLOSED")
+RPLL_HELPER:RegisterEvent("PLAYER_ENTERING_WORLD")
+RPLL_HELPER:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
+RPLL_HELPER:RegisterEvent("PLAYER_GUILD_UPDATE")
+RPLL_HELPER:RegisterEvent("PLAYER_PET_CHANGED")
+RPLL_HELPER:RegisterEvent("UNIT_ENTERED_VEHICLE")
+RPLL_HELPER:RegisterEvent("UNIT_PET")
+RPLL_HELPER:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+
+function RPLL_HELPER:OnEvent(event, unit, ...)
+	if event == "PLAYER_EQUIPMENT_CHANGED" or event == "ZONE_CHANGED_NEW_AREA" or event == "PLAYER_GUILD_UPDATE" then
+		RPLL_HELPER:SendPlayerInfo()
+	elseif event == "UNIT_PET" or event == "UNIT_ENTERED_VEHICLE" then
+		if unit == "player" then
+			self:SendPetInfo()
+		end
+	elseif event == "PLAYER_PET_CHANGED" or event == "PET_STABLE_CLOSED" then
+		self:SendPetInfo()
+	elseif event == "CHAT_MSG_LOOT" then
+		self:ProcessLootMessage(...)
+	elseif event == "PLAYER_ENTERING_WORLD" then
+		self:UnregisterEvent(event)
+
+		RPLL_HELPER:SendPlayerInfo()
+
+		self:PrintMessage("Initialized!")
+	end
+end
+
+function RPLL_HELPER:PrintMessage(...)
+	DEFAULT_CHAT_FRAME:AddMessage(strconcat("|cFFFF8080LegacyPlayers Helper|r: ", ...))
+end
+
+function RPLL_HELPER:SendPetInfo()
+	local petGUID = UnitGUID("pet")
+	if petGUID and petGUID ~= "" then
+		SendAddonMessage(RPLL_HELPER.MESSAGE_PREFIX .. "PET", strjoin("&", UnitGUID("player"), petGUID), "RAID")
+	end
+end
+
+function RPLL_HELPER:SendPlayerInfo()
+	local guid = UnitGUID("player")
+	if guid and guid ~= "" then
+		local now = time()
+		if self.lastUpdate and (now - self.lastUpdate) <= 30 then
+			return
+		end
+
+		self.lastUpdate = now
+
+		local pinfo = RPLL_HELPER.PlayerInfo
+
+		pinfo["guid"] = guid
+		pinfo["name"] = UnitName("player")
+
+		-- Guild
+		local guildName, guildRankName, guildRankIndex = GetGuildInfo("player")
+		if guildName then
+			pinfo["guildName"] = guildName
+			pinfo["guildRankName"] = guildRankName
+			pinfo["guildRankIndex"] = guildRankIndex
+		else
+			pinfo["guildName"] = nil
+			pinfo["guildRankName"] = nil
+			pinfo["guildRankIndex"] = nil
+		end
+
+		-- Pet name
+		local petName = UnitName("pet")
+		if petName and petName ~= UNKNOWN then
+			pinfo["pet"] = petName
+		else
+			pinfo["pet"] = nil
+		end
+
+		-- Hero Class, race, sex
+		pinfo["class"] = select(2, UnitClass("player"))
+		pinfo["race"] = select(2, UnitRace("player"))
+		pinfo["gender"] = UnitSex("player")
+
+		-- Gear
+		for i = 1, 19 do
+			local itemLink = GetInventoryItemLink("player", i)
+			if itemLink then
+				local itemString = strmatch(itemLink, "item:([^\124]+)")
+				if itemString then
+					pinfo["gear"][i] = itemString
+				else
+					pinfo["gear"][i] = nil
+				end
+			else
+				pinfo["gear"][i] = nil
+			end
+		end
+
+		-- Talents
+		do
+			local index = 1
+			local talents = {}
+			for tabIndex = 1, 3 do
+				local numTalents = GetNumTalents(tabIndex, false)
+				for talentIndex = 1, numTalents do
+					local name, _, _, _, curRank = GetTalentInfo(tabIndex, talentIndex, false)
+					talents[index] = name and curRank or "0"
+					index = index + 1
+				end
+				if tabIndex ~= 3 then
+					talents[index] = "}"
+					index = index + 1
+				end
+			end
+
+			if index > 10 then
+				pinfo["talents"] = tconcat(talents, "")
+			end
+		end
+
+		-- Arena Teams
+		for i = 1, 3 do
+			local teamName, teamSize = GetArenaTeam(i)
+			if teamName then
+				pinfo["arenaTeams"][teamSize] = teamName
+			end
+		end
+
+		SendAddonMessage(RPLL_HELPER.MESSAGE_PREFIX .. "CBT_I_1", RPLL_HELPER:SerializePlayerInformation(1), "RAID")
+		SendAddonMessage(RPLL_HELPER.MESSAGE_PREFIX .. "CBT_I_2", RPLL_HELPER:SerializePlayerInformation(2), "RAID")
+		SendAddonMessage(RPLL_HELPER.MESSAGE_PREFIX .. "CBT_I_3", RPLL_HELPER:SerializePlayerInformation(3), "RAID")
+		SendAddonMessage(RPLL_HELPER.MESSAGE_PREFIX .. "CBT_I_4", RPLL_HELPER:SerializePlayerInformation(4), "RAID")
+		SendAddonMessage(RPLL_HELPER.MESSAGE_PREFIX .. "CBT_I_5", RPLL_HELPER:SerializePlayerInformation(5), "RAID")
+		SendAddonMessage(RPLL_HELPER.MESSAGE_PREFIX .. "CBT_I_6", RPLL_HELPER:SerializePlayerInformation(6), "RAID")
+	end
+end
+
+local function valueOrNil(val)
 	if val == nil then
 		return "nil"
 	end
 	return val
 end
 
-local RPLL_HELPER = CreateFrame("Frame")
-RPLL_HELPER.VERSION = 3
-RPLL_HELPER.MESSAGE_PREFIX = "RPLL_H_"
-RPLL_HELPER.PlayerInfo = {}
+function RPLL_HELPER:SerializePlayerInformation(iteration)
+	local pinfo = RPLL_HELPER.PlayerInfo
 
-RPLL_HELPER:SetScript("OnEvent", function(self, event, ...)
-	self[event](...)
-end)
-
-RPLL_HELPER:RegisterEvent("ZONE_CHANGED_NEW_AREA")
-RPLL_HELPER:RegisterEvent("PLAYER_ENTERING_WORLD")
-RPLL_HELPER:RegisterEvent("PLAYER_GUILD_UPDATE")
-
-RPLL_HELPER:RegisterEvent("UNIT_PET")
-RPLL_HELPER:RegisterEvent("PLAYER_PET_CHANGED")
-RPLL_HELPER:RegisterEvent("PET_STABLE_CLOSED")
-
-RPLL_HELPER:RegisterEvent("CHAT_MSG_LOOT")
-RPLL_HELPER:RegisterEvent("UNIT_INVENTORY_CHANGED")
-
-RPLL_HELPER:RegisterEvent("INSPECT_TALENT_READY")
-RPLL_HELPER:RegisterEvent("UNIT_ENTERED_VEHICLE")
-
-local inspect_pending = false
-RPLL_HELPER.ZONE_CHANGED_NEW_AREA = function()
-	if not inspect_pending then
-		NotifyInspect("player")
-		inspect_pending = true
-	end
-end
-
-RPLL_HELPER.PLAYER_GUILD_UPDATE = function()
-	if not inspect_pending then
-		NotifyInspect("player")
-		inspect_pending = true
-	end
-end
-
-RPLL_HELPER.UNIT_INVENTORY_CHANGED = function(unit)
-	if unit == "player" and not inspect_pending then
-		NotifyInspect("player")
-		inspect_pending = true
-	end
-end
-
-RPLL_HELPER.PLAYER_ENTERING_WORLD = function()
-	RPLL_HELPER:UnregisterEvent("PLAYER_ENTERING_WORLD")
-
-	if not inspect_pending then
-		NotifyInspect("player")
-		inspect_pending = true
-	end
-	RPLL_HELPER:SendMessage("Initialized!")
-end
-
-RPLL_HELPER.PLAYER_PET_CHANGED = function()
-	RPLL_HELPER:grab_pet_information()
-end
-
-RPLL_HELPER.PET_STABLE_CLOSED = function()
-	RPLL_HELPER:grab_pet_information()
-end
-
-RPLL_HELPER.UNIT_PET = function(unit)
-	if unit == "player" then
-		RPLL_HELPER:grab_pet_information()
-	end
-end
-
-RPLL_HELPER.UNIT_ENTERED_VEHICLE = function(unit)
-	if unit == "player" then
-		RPLL_HELPER:grab_pet_information()
+	if iteration == 1 then
+		return strjoin("&", valueOrNil(pinfo["guid"]),
+			valueOrNil(pinfo["name"]), valueOrNil(pinfo["race"]), valueOrNil(pinfo["class"]), valueOrNil(pinfo["gender"]),
+			valueOrNil(pinfo["guildName"]), valueOrNil(pinfo["guildRankName"]), valueOrNil(pinfo["guildRankIndex"]))
+	elseif iteration == 2 then
+		return strjoin("&", valueOrNil(pinfo["guid"]),
+			valueOrNil(pinfo["talents"]),
+			valueOrNil(pinfo["arenaTeams"][2]), valueOrNil(pinfo["arenaTeams"][3]), valueOrNil(pinfo["arenaTeams"][5]))
+	elseif iteration == 3 then
+		local gear = valueOrNil(pinfo["gear"][1])
+		for i = 2, 5 do
+			gear = gear .. "}" .. valueOrNil(pinfo["gear"][i])
+		end
+		return strjoin("&", valueOrNil(pinfo["guid"]), gear)
+	elseif iteration == 4 then
+		local gear = valueOrNil(pinfo["gear"][6])
+		for i = 7, 10 do
+			gear = gear .. "}" .. valueOrNil(pinfo["gear"][i])
+		end
+		return strjoin("&", valueOrNil(pinfo["guid"]), gear)
+	elseif iteration == 5 then
+		local gear = valueOrNil(pinfo["gear"][11])
+		for i = 12, 15 do
+			gear = gear .. "}" .. valueOrNil(pinfo["gear"][i])
+		end
+		return strjoin("&", valueOrNil(pinfo["guid"]), gear)
+	elseif iteration == 6 then
+		local gear = valueOrNil(pinfo["gear"][16])
+		for i = 17, 19 do
+			gear = gear .. "}" .. valueOrNil(pinfo["gear"][i])
+		end
+		return strjoin("&", valueOrNil(pinfo["guid"]), gear)
 	end
 end
 
@@ -162,12 +271,12 @@ do
 	end
 end
 
-RPLL_HELPER.CHAT_MSG_LOOT = function(msg)
+function RPLL_HELPER:ProcessLootMessage(message)
 	local result, resultName
 	local playerName = UnitName("player")
 
 	for pattern, replaceMessage in pairs(CHAT_LOOT_SELF_PATTERNS) do
-		local loot, count = string.match(msg, pattern)
+		local loot, count = strmatch(message, pattern)
 		if loot then
 			if count then
 				result = replaceMessage:format(replaceMessage, playerName, loot, count)
@@ -181,7 +290,7 @@ RPLL_HELPER.CHAT_MSG_LOOT = function(msg)
 	if not result then
 		for pattern, replaceMessage in pairs(CHAT_LOOT_OTHER_PATTERNS) do
 			local loot, count
-			resultName, loot, count = string.match(msg, pattern)
+			resultName, loot, count = strmatch(message, pattern)
 			if resultName then
 				if count then
 					result = replaceMessage:format(replaceMessage, resultName, loot, count)
@@ -196,183 +305,4 @@ RPLL_HELPER.CHAT_MSG_LOOT = function(msg)
 	if result and resultName == playerName then
 		SendAddonMessage(RPLL_HELPER.MESSAGE_PREFIX .. "LOOT", result, "RAID")
 	end
-end
-
-local inspect_ready = false
-RPLL_HELPER.INSPECT_TALENT_READY = function()
-	if inspect_pending then
-		inspect_ready = true
-		RPLL_HELPER:grab_player_information()
-		inspect_ready = false
-		inspect_pending = false
-	end
-end
-
-function RPLL_HELPER:grab_pet_information()
-	local pet_guid = UnitGUID("pet")
-	if pet_guid ~= nil and pet_guid ~= "" then
-		local player_guid = UnitGUID("player")
-		SendAddonMessage(RPLL_HELPER.MESSAGE_PREFIX .. "PET", strjoin("&", player_guid, pet_guid), "RAID")
-	end
-end
-
-function RPLL_HELPER:grab_player_information()
-	local unit_guid = UnitGUID("player")
-	if unit_guid ~= nil and unit_guid ~= "" then
-		if RPLL_HELPER.PlayerInfo["last_update"] ~= nil and time() - RPLL_HELPER.PlayerInfo["last_update"] <= 30 then
-			return
-		end
-		RPLL_HELPER.PlayerInfo["last_update_date"] = date("%d.%m.%y %H:%M:%S")
-		RPLL_HELPER.PlayerInfo["last_update"] = time()
-		RPLL_HELPER.PlayerInfo["unit_name"] = UnitName("player")
-		RPLL_HELPER.PlayerInfo["unit_guid"] = unit_guid
-
-		-- Guild RPLL_HELPER.PlayerInfo
-		local guildName, guildRankName, guildRankIndex = GetGuildInfo("player")
-		if guildName ~= nil then
-			RPLL_HELPER.PlayerInfo["guild_name"] = guildName
-			RPLL_HELPER.PlayerInfo["guild_rank_name"] = guildRankName
-			RPLL_HELPER.PlayerInfo["guild_rank_index"] = guildRankIndex
-		end
-
-		-- Pet name
-		local pet_name = UnitName("pet")
-		if pet_name ~= nil and pet_name ~= UNKNOWN then
-			RPLL_HELPER.PlayerInfo["pet"] = pet_name
-		end
-
-		-- Hero Class, race, sex
-		if UnitClass("player") ~= nil then
-			local _, english_class = UnitClass("player")
-			RPLL_HELPER.PlayerInfo["hero_class"] = english_class
-		end
-		if UnitRace("player") ~= nil then
-			local _, en_race = UnitRace("player")
-			RPLL_HELPER.PlayerInfo["race"] = en_race
-		end
-		if UnitSex("player") ~= nil then
-			RPLL_HELPER.PlayerInfo["gender"] = UnitSex("player")
-		end
-
-		-- Gear
-		local any_item = false
-		for i = 1, 19 do
-			if GetInventoryItemLink("player", i) ~= nil then
-				any_item = true
-				break
-			end
-		end
-
-		if RPLL_HELPER.PlayerInfo["gear"] == nil then
-			RPLL_HELPER.PlayerInfo["gear"] = {}
-		end
-
-		if any_item then
-			RPLL_HELPER.PlayerInfo["gear"] = {}
-			for i = 1, 19 do
-				local inv_link = GetInventoryItemLink("player", i)
-				if inv_link == nil then
-					RPLL_HELPER.PlayerInfo["gear"][i] = nil
-				else
-					local found, _, itemString = strfind(inv_link, "Hitem:(.+)\124h%[")
-					if found == nil then
-						RPLL_HELPER.PlayerInfo["gear"][i] = nil
-					else
-						RPLL_HELPER.PlayerInfo["gear"][i] = itemString
-					end
-				end
-			end
-		end
-
-		if RPLL_HELPER.PlayerInfo["arena_teams"] == nil then
-			RPLL_HELPER.PlayerInfo["arena_teams"] = {}
-		end
-
-		if inspect_ready then
-			-- Talents
-			local talents = { "", "", "" };
-			for t = 1, 3 do
-				local numTalents = GetNumTalents(t, false);
-				-- Last one is missing?
-				for i = 1, numTalents do
-					local _, _, _, _, currRank = GetTalentInfo(t, i, false);
-					talents[t] = talents[t] .. currRank
-				end
-			end
-			talents = strjoin("}", talents[1], talents[2], talents[3])
-			if strlen(talents) <= 10 then
-				talents = nil
-			end
-
-			if talents ~= nil then
-				RPLL_HELPER.PlayerInfo["talents"] = talents
-			end
-
-			-- Arena Teams
-			local arena_teams = {}
-			for i = 1, 3 do
-				local team_name, team_size
-			--	if unit == "player" then
-					team_name, team_size = GetArenaTeam(i);
-			--	else
-			--		team_name, team_size = GetInspectArenaTeamData(i);
-			--	end
-
-				if team_name ~= nil and team_size ~= nil then
-					arena_teams[team_size] = team_name
-				end
-			end
-			for team_size, team_name in pairs(arena_teams) do
-				RPLL_HELPER.PlayerInfo["arena_teams"][team_size] = team_name
-			end
-		end
-
-		SendAddonMessage(RPLL_HELPER.MESSAGE_PREFIX .. "CBT_I_1", RPLL_HELPER:SerializePlayerInformation(1), "RAID")
-		SendAddonMessage(RPLL_HELPER.MESSAGE_PREFIX .. "CBT_I_2", RPLL_HELPER:SerializePlayerInformation(2), "RAID")
-		SendAddonMessage(RPLL_HELPER.MESSAGE_PREFIX .. "CBT_I_3", RPLL_HELPER:SerializePlayerInformation(3), "RAID")
-		SendAddonMessage(RPLL_HELPER.MESSAGE_PREFIX .. "CBT_I_4", RPLL_HELPER:SerializePlayerInformation(4), "RAID")
-		SendAddonMessage(RPLL_HELPER.MESSAGE_PREFIX .. "CBT_I_5", RPLL_HELPER:SerializePlayerInformation(5), "RAID")
-		SendAddonMessage(RPLL_HELPER.MESSAGE_PREFIX .. "CBT_I_6", RPLL_HELPER:SerializePlayerInformation(6), "RAID")
-	end
-end
-
-function RPLL_HELPER:SerializePlayerInformation(iteration)
-	local val = RPLL_HELPER.PlayerInfo;
-
-	if iteration == 1 then
-		return strjoin("&", prep_value(val["unit_guid"]), prep_value(val["unit_name"]),
-				prep_value(val["race"]), prep_value(val["hero_class"]), prep_value(val["gender"]), prep_value(val["guild_name"]),
-				prep_value(val["guild_rank_name"]), prep_value(val["guild_rank_index"]))
-	elseif iteration == 2 then
-		return strjoin("&", prep_value(val["unit_guid"]), prep_value(val["talents"]),
-				prep_value(val["arena_teams"][2]), prep_value(val["arena_teams"][3]), prep_value(val["arena_teams"][5]))
-	elseif iteration == 3 then
-		local gear = prep_value(val["gear"][1])
-		for i = 2, 5 do
-			gear = gear .. "}" .. prep_value(val["gear"][i])
-		end
-		return strjoin("&", prep_value(val["unit_guid"]), gear)
-	elseif iteration == 4 then
-		local gear = prep_value(val["gear"][6])
-		for i = 7, 10 do
-			gear = gear .. "}" .. prep_value(val["gear"][i])
-		end
-		return strjoin("&", prep_value(val["unit_guid"]), gear)
-	elseif iteration == 5 then
-		local gear = prep_value(val["gear"][11])
-		for i = 12, 15 do
-			gear = gear .. "}" .. prep_value(val["gear"][i])
-		end
-		return strjoin("&", prep_value(val["unit_guid"]), gear)
-	elseif iteration == 6 then
-		local gear = prep_value(val["gear"][16])
-		for i = 17, 19 do
-			gear = gear .. "}" .. prep_value(val["gear"][i])
-		end
-		return strjoin("&", prep_value(val["unit_guid"]), gear)
-	end
-end
-
-function RPLL_HELPER:SendMessage(msg)
-	DEFAULT_CHAT_FRAME:AddMessage("|cFFFF8080LegacyPlayers Helper|r: " .. msg)
 end

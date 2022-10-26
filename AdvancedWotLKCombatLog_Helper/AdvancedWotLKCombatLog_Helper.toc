@@ -1,6 +1,6 @@
 ## Interface: 30300
 ## Title: AdvancedWotLkCombatLog Helper |cFFFF8080-Shino-|r
-## Notes: |@Version: 2@|Sends additional information to the people that collect logs for LegacyPlayers
+## Notes: |@Version: 3@|Sends additional information to the people that collect logs for LegacyPlayers
 ## Author: Shino
 
 core.lua
